@@ -31,9 +31,12 @@ type StatsService struct {
 	createdAt time.Time
 	inbounds  map[string]bool
 	outbounds map[string]bool
-	users     map[string]bool
-	access    sync.Mutex
-	counters  map[string]*atomic.Int64
+	// users is swapped atomically by UpdateUsers. The counting path reads it on
+	// every routed connection without holding access, so it must not be mutated
+	// in place.
+	users    atomic.Pointer[map[string]bool]
+	access   sync.Mutex
+	counters map[string]*atomic.Int64
 }
 
 func NewStatsService(options option.V2RayStatsServiceOptions) *StatsService {
@@ -52,13 +55,36 @@ func NewStatsService(options option.V2RayStatsServiceOptions) *StatsService {
 	for _, user := range options.Users {
 		users[user] = true
 	}
-	return &StatsService{
+	statsService := &StatsService{
 		createdAt: time.Now(),
 		inbounds:  inbounds,
 		outbounds: outbounds,
-		users:     users,
 		counters:  make(map[string]*atomic.Int64),
 	}
+	statsService.users.Store(&users)
+	return statsService
+}
+
+// countsUser reports whether traffic for this user should be counted.
+func (s *StatsService) countsUser(user string) bool {
+	users := s.users.Load()
+	if users == nil {
+		return false
+	}
+	return (*users)[user]
+}
+
+// UpdateUsers replaces the set of users whose traffic is counted, so that users
+// added to an inbound at runtime start being billed without restarting the
+// instance. Existing counters are left untouched: a user who is removed keeps
+// whatever it has already accumulated until the next reset, which is what a
+// panel polling with reset=true expects.
+func (s *StatsService) UpdateUsers(users []string) {
+	set := make(map[string]bool, len(users))
+	for _, user := range users {
+		set[user] = true
+	}
+	s.users.Store(&set)
 }
 
 func (s *StatsService) RoutedConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
@@ -69,7 +95,7 @@ func (s *StatsService) RoutedConnection(ctx context.Context, conn net.Conn, meta
 	var writeCounter []*atomic.Int64
 	countInbound := inbound != "" && s.inbounds[inbound]
 	countOutbound := outbound != "" && s.outbounds[outbound]
-	countUser := user != "" && s.users[user]
+	countUser := user != "" && s.countsUser(user)
 	if !countInbound && !countOutbound && !countUser {
 		return conn
 	}
@@ -98,7 +124,7 @@ func (s *StatsService) RoutedPacketConnection(ctx context.Context, conn N.Packet
 	var writeCounter []*atomic.Int64
 	countInbound := inbound != "" && s.inbounds[inbound]
 	countOutbound := outbound != "" && s.outbounds[outbound]
-	countUser := user != "" && s.users[user]
+	countUser := user != "" && s.countsUser(user)
 	if !countInbound && !countOutbound && !countUser {
 		return conn
 	}
@@ -127,7 +153,7 @@ func (s *StatsService) RoutedFlow(ctx context.Context, metadata adapter.InboundC
 	var downlinkCounter []*atomic.Int64
 	countInbound := inbound != "" && s.inbounds[inbound]
 	countOutbound := outbound != "" && s.outbounds[outbound]
-	countUser := user != "" && s.users[user]
+	countUser := user != "" && s.countsUser(user)
 	if !countInbound && !countOutbound && !countUser {
 		return nil
 	}

@@ -13,7 +13,7 @@ These patches expose what is already there.
 
 ## The complete diff against upstream v1.14.0
 
-Five files, ~75 lines. Nothing else is touched.
+Six files, ~110 lines. Nothing else is touched.
 
 | File | Change |
 |---|---|
@@ -21,7 +21,26 @@ Five files, ~75 lines. Nothing else is touched.
 | `protocol/vless/user.go` | new — `(*Inbound).UpdateUsers([]option.VLESSUser)` |
 | `protocol/shadowsocks/user.go` | new — `(*MultiInbound).UpdateUsersByOptions([]option.ShadowsocksUser)` |
 | `protocol/anytls/user.go` | new — `(*Inbound).UpdateUsers([]option.AnyTLSUser)` |
+| `experimental/v2rayapi/stats.go` | ~+35 — `(*StatsService).UpdateUsers([]string)`, so hot-added users are billed |
 | `experimental/clashapi/connections.go` | +1 — adds `"user"` to the connection JSON so callers can attribute a connection to a user |
+
+### Why the stats patch is not optional
+
+`StatsService` builds its `users` set once, in `NewStatsService`, and every
+routed connection checks `user != "" && s.users[user]` to decide whether to
+count traffic. Swapping an inbound's user set at runtime therefore gets you a
+user who can connect and relay traffic that is **never counted** — silently, with
+no error anywhere, until the next full config apply.
+
+That is worse than the restart it was meant to avoid: a panel bills from these
+counters, so the user rides for free and nothing looks wrong.
+
+The patch turns `users` into an `atomic.Pointer[map[string]bool]` and adds
+`UpdateUsers`, which swaps the whole map. The read path stays lock-free —
+it runs on every routed connection, so taking a mutex there would put lock
+contention directly in the forwarding path. Existing counters are left alone:
+a removed user keeps what it accumulated until the panel's next `reset=true`
+poll, which is the behaviour a billing poller expects.
 
 Each `user.go` is a thin wrapper over the service call the constructor already
 makes, plus a compile-time interface assertion:
