@@ -1,0 +1,4 @@
+# Keep LF on checkout everywhere. Without this, a clone on Windows with
+# core.autocrlf=true rewrites the shell scripts to CRLF and they fail at runtime
+# with "bad interpreter: /bin/sh^M".
+* text=auto eol=lf
