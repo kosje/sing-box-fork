@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -35,13 +36,14 @@ var (
 
 type MultiInbound struct {
 	inbound.Adapter
-	ctx      context.Context
-	router   adapter.ConnectionRouterEx
-	logger   logger.ContextLogger
-	listener *listener.Listener
-	service  shadowsocks.MultiService[int]
-	users    []option.ShadowsocksUser
-	tracker  adapter.SSMTracker
+	ctx       context.Context
+	router    adapter.ConnectionRouterEx
+	logger    logger.ContextLogger
+	listener  *listener.Listener
+	service   shadowsocks.MultiService[int]
+	users     []option.ShadowsocksUser
+	userNames atomic.Pointer[[]string] // see user.go: read on the connection path
+	tracker   adapter.SSMTracker
 }
 
 func newMultiInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.ShadowsocksInboundOptions) (*MultiInbound, error) {
@@ -95,6 +97,7 @@ func newMultiInbound(ctx context.Context, router adapter.Router, logger log.Cont
 	}
 	inbound.service = service
 	inbound.users = options.Users
+	inbound.storeUserNames(options.Users)
 	inbound.listener = listener.New(listener.Options{
 		Context:                  ctx,
 		Logger:                   logger,
@@ -134,6 +137,10 @@ func (h *MultiInbound) UpdateUsers(users []string, uPSKs []string) error {
 			Name: user,
 		}
 	})
+	// Keep the connection path's snapshot in step with h.users. Upstream reads
+	// h.users[userIndex] directly here, which panics if this SSM update grows
+	// the user set while a connection is being accepted; see user.go.
+	h.storeUserNames(h.users)
 	return nil
 }
 
@@ -163,7 +170,7 @@ func (h *MultiInbound) newConnection(ctx context.Context, conn net.Conn, metadat
 	if !loaded {
 		return os.ErrInvalid
 	}
-	user := h.users[userIndex].Name
+	user := h.userName(userIndex)
 	if user == "" {
 		user = F.ToString(userIndex)
 	} else {
@@ -186,7 +193,7 @@ func (h *MultiInbound) newPacketConnection(ctx context.Context, conn N.PacketCon
 	if !loaded {
 		return os.ErrInvalid
 	}
-	user := h.users[userIndex].Name
+	user := h.userName(userIndex)
 	if user == "" {
 		user = F.ToString(userIndex)
 	} else {
