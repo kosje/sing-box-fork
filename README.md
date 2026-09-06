@@ -1,3 +1,23 @@
+# skysbx-core
+
+A fork of [sing-box](https://github.com/SagerNet/sing-box) **v1.14.0**, carrying
+eight patched files (~180 lines) so that inbound user sets can be changed
+without restarting the listener. Everything else is upstream, untouched.
+
+**This project is not affiliated with or endorsed by the sing-box project.
+Do not report issues with this fork to them.**
+
+It exists to be compiled into [`skysbx-node`](https://github.com/kosje/skysbx-node),
+which embeds it rather than running it as a separate process. There is no
+separate core version to manage: rebuilding the node is what upgrades it.
+
+The complete diff against upstream, why each patch is there, and how to rebase
+it onto a newer sing-box, are in [`MODIFICATIONS.md`](MODIFICATIONS.md).
+
+Upstream's own README follows.
+
+---
+
 # sing-box
 
 The universal proxy platform.
